@@ -2,7 +2,7 @@ name: Auto Build and Publish
 
 on:
   push:
-    branches: [ "master" ] # 确认你的主分支是 master 还是 main
+    branches: [ "main" ] # 确认你的主分支是 master 还是 main
 
 jobs:
   # 阶段 1：检测 Commit 记录
