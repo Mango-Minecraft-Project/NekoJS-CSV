@@ -2,46 +2,52 @@ name: Auto Build and Publish
 
 on:
   push:
-    branches: [ "main" ] # 确认你的主分支是 master 还是 main
+    branches:
+      - '**' # 監聽所有分支的 Push 事件
 
 jobs:
-  # 阶段 1：检测 Commit 记录
-  check-commit:
+  # 階段 1：自動提取環境資訊
+  prepare-info:
     runs-on: ubuntu-latest
     outputs:
-      should_publish: ${{ steps.match.outputs.should_publish }}
-      version: ${{ steps.match.outputs.version }}
+      branch: ${{ steps.vars.outputs.branch }}
+      project_name: ${{ steps.vars.outputs.project_name }}
+      version: ${{ steps.vars.outputs.version }}
+      should_publish: ${{ steps.vars.outputs.should_publish }}
     steps:
-      - name: Extract version from commit message
-        id: match
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract Project Info
+        id: vars
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          # 1. 自動獲取當前分支短名稱 (例如 main, dev, feature-x)
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
           
-          # 将正则表达式存入变量，完美避开空格解析问题
+          # 2. 從 settings.gradle 自動提取專案名稱 (若提取失敗則預設為 Project)
+          P_NAME=$(grep "rootProject.name" settings.gradle | cut -d"'" -f2 | cut -d'"' -f2 || echo "Project")
+          echo "project_name=$P_NAME" >> $GITHUB_OUTPUT
+          
+          # 3. 偵測 Commit Message 中的 "update x.x.x"
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
           REGEX="update ([0-9a-zA-Z.-]+)"
           
           if [[ "$COMMIT_MSG" =~ $REGEX ]]; then
-            echo "Matched version: ${BASH_REMATCH[1]}"
-            echo "should_publish=true" >> $GITHUB_OUTPUT
             echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "should_publish=true" >> $GITHUB_OUTPUT
           else
-            echo "No 'update' pattern found. Skipping build."
             echo "should_publish=false" >> $GITHUB_OUTPUT
           fi
 
-  # 阶段 2：编译 Mod 并发布 Release
-  build-and-release:
-    needs: check-commit
-    if: needs.check-commit.outputs.should_publish == 'true'
+  # 階段 2：編譯並上傳 Artifact (所有分支都會執行)
+  build-and-artifact:
+    needs: prepare-info
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # 🌟 修复 4：极其重要！设为 0 表示拉取所有提交历史和 Tag，否则无法对比日志！
           fetch-depth: 0
 
       - name: Set up JDK
@@ -53,30 +59,53 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Build Project
+        run: |
+          chmod +x ./gradlew
+          ./gradlew build
 
-      - name: Build Mod
-        run: ./gradlew build
+      # 將編譯好的檔案存入 Artifact，名稱格式為：專案名-分支名
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare-info.outputs.project_name }}-${{ needs.prepare-info.outputs.branch }}
+          path: build/libs/*.jar
+          retention-days: 7
 
-      # 🌟 新增步骤：自动生成更新日志
+  # 階段 3：正式發佈 (🌟 關鍵修改：僅限 main 分支且包含 update 關鍵字)
+  publish-release:
+    needs: [prepare-info, build-and-artifact]
+    # 權限控管：必須包含 update 關鍵字，且分支必須是 main
+    if: |
+      needs.prepare-info.outputs.should_publish == 'true' && 
+      needs.prepare-info.outputs.branch == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 下載剛才在 build-and-artifact 階段產生的檔案
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.prepare-info.outputs.project_name }}-${{ needs.prepare-info.outputs.branch }}
+          path: build/libs/
+
       - name: Generate Changelog
         id: changelog
         run: |
-          # 尝试获取上一个版本的 Tag，如果找不到（比如这是第一次发版），就返回空
           PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          
           if [ -z "$PREVIOUS_TAG" ]; then
-            echo "First release detected. Getting all commits."
-            # 第一次发版，获取所有历史提交
             COMMITS=$(git log --pretty=format:"* %s (%h)")
           else
-            echo "Previous release tag: $PREVIOUS_TAG"
-            # 获取上一个 Tag 到当前 HEAD 的所有提交记录
             COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"* %s (%h)")
           fi
           
-          # GitHub Actions 传递多行变量的标准写法 (使用随机定界符防止内容截断)
           EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
           echo "notes<<$EOF" >> $GITHUB_OUTPUT
           echo "$COMMITS" >> $GITHUB_OUTPUT
@@ -85,12 +114,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check-commit.outputs.version }}
-          name: NekoJS CSV v${{ needs.check-commit.outputs.version }}
-          # 🌟 修复 5：拼接自动生成的 Changelog 到发版说明中
+          tag_name: v${{ needs.prepare-info.outputs.version }}
+          name: "${{ needs.prepare-info.outputs.project_name }} v${{ needs.prepare-info.outputs.version }}"
           body: |
-            Automated release triggered by commit.
+            ## 🚀 Automated Release (Main Branch)
             
-            ### 📝 更新日志 (Changelog)
+            ### 📝 更新日誌 (Changelog)
             ${{ steps.changelog.outputs.notes }}
           files: build/libs/*.jar
