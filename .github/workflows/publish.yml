@@ -1,0 +1,96 @@
+name: Auto Build and Publish
+
+on:
+  push:
+    branches: [ "master" ] # 确认你的主分支是 master 还是 main
+
+jobs:
+  # 阶段 1：检测 Commit 记录
+  check-commit:
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.match.outputs.should_publish }}
+      version: ${{ steps.match.outputs.version }}
+    steps:
+      - name: Extract version from commit message
+        id: match
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          
+          # 将正则表达式存入变量，完美避开空格解析问题
+          REGEX="update ([0-9a-zA-Z.-]+)"
+          
+          if [[ "$COMMIT_MSG" =~ $REGEX ]]; then
+            echo "Matched version: ${BASH_REMATCH[1]}"
+            echo "should_publish=true" >> $GITHUB_OUTPUT
+            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "No 'update' pattern found. Skipping build."
+            echo "should_publish=false" >> $GITHUB_OUTPUT
+          fi
+
+  # 阶段 2：编译 Mod 并发布 Release
+  build-and-release:
+    needs: check-commit
+    if: needs.check-commit.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # 🌟 修复 4：极其重要！设为 0 表示拉取所有提交历史和 Tag，否则无法对比日志！
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build Mod
+        run: ./gradlew build
+
+      # 🌟 新增步骤：自动生成更新日志
+      - name: Generate Changelog
+        id: changelog
+        run: |
+          # 尝试获取上一个版本的 Tag，如果找不到（比如这是第一次发版），就返回空
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "First release detected. Getting all commits."
+            # 第一次发版，获取所有历史提交
+            COMMITS=$(git log --pretty=format:"* %s (%h)")
+          else
+            echo "Previous release tag: $PREVIOUS_TAG"
+            # 获取上一个 Tag 到当前 HEAD 的所有提交记录
+            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"* %s (%h)")
+          fi
+          
+          # GitHub Actions 传递多行变量的标准写法 (使用随机定界符防止内容截断)
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "notes<<$EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "$EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-commit.outputs.version }}
+          name: NekoJS v${{ needs.check-commit.outputs.version }}
+          # 🌟 修复 5：拼接自动生成的 Changelog 到发版说明中
+          body: |
+            Automated release triggered by commit.
+            
+            ### 📝 更新日志 (Changelog)
+            ${{ steps.changelog.outputs.notes }}
+          files: build/libs/*.jar
