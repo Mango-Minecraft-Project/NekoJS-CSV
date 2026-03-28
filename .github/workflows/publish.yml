@@ -86,7 +86,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.check-commit.outputs.version }}
-          name: NekoJS v${{ needs.check-commit.outputs.version }}
+          name: NekoJS CSV v${{ needs.check-commit.outputs.version }}
           # 🌟 修复 5：拼接自动生成的 Changelog 到发版说明中
           body: |
             Automated release triggered by commit.
