@@ -1,12 +1,15 @@
-name: Auto Build and Publish
+name: Universal Auto Build and Publish
 
 on:
   push:
     branches:
-      - '**' # 監聽所有分支的 Push 事件
+      - '**'
+
+# 🌟 全域設定：強制使用 Node.js 24 以消除棄用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # 階段 1：自動提取環境資訊
   prepare-info:
     runs-on: ubuntu-latest
     outputs:
@@ -21,15 +24,12 @@ jobs:
       - name: Extract Project Info
         id: vars
         run: |
-          # 1. 自動獲取當前分支短名稱 (例如 main, dev, feature-x)
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
           echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
           
-          # 2. 從 settings.gradle 自動提取專案名稱 (若提取失敗則預設為 Project)
           P_NAME=$(grep "rootProject.name" settings.gradle | cut -d"'" -f2 | cut -d'"' -f2 || echo "Project")
           echo "project_name=$P_NAME" >> $GITHUB_OUTPUT
           
-          # 3. 偵測 Commit Message 中的 "update x.x.x"
           COMMIT_MSG="${{ github.event.head_commit.message }}"
           REGEX="update ([0-9a-zA-Z.-]+)"
           
@@ -40,7 +40,6 @@ jobs:
             echo "should_publish=false" >> $GITHUB_OUTPUT
           fi
 
-  # 階段 2：編譯並上傳 Artifact (所有分支都會執行)
   build-and-artifact:
     needs: prepare-info
     runs-on: ubuntu-latest
@@ -58,13 +57,16 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          # 🌟 如果快取一直報錯且讓你很煩，可以暫時加上這行關閉快取寫入
+          # cache-read-only: false
+          gradle-version: wrapper
 
       - name: Build Project
         run: |
           chmod +x ./gradlew
           ./gradlew build
 
-      # 將編譯好的檔案存入 Artifact，名稱格式為：專案名-分支名
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -72,10 +74,8 @@ jobs:
           path: build/libs/*.jar
           retention-days: 7
 
-  # 階段 3：正式發佈 (🌟 關鍵修改：僅限 main 分支且包含 update 關鍵字)
   publish-release:
     needs: [prepare-info, build-and-artifact]
-    # 權限控管：必須包含 update 關鍵字，且分支必須是 main
     if: |
       needs.prepare-info.outputs.should_publish == 'true' && 
       needs.prepare-info.outputs.branch == 'main'
@@ -89,7 +89,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 下載剛才在 build-and-artifact 階段產生的檔案
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
