@@ -1,12 +1,10 @@
-# NekoJS Addon Example
+# NekoJS CSV
 
 Adds CSV (Comma-Separated Values) Parse/Read/Write support for KubeJS. This mod has no functionality for end users (players).
 
 CSV files is popular in professional game development, and also can be more efficient when you want to do a lot of modifications than writing KubeJS script for each of them (e.g. when you need to add a lot of new blocks/items).
 
-This mod is needed because KubeJS forbids access to java.io/nio, and only allows reading JSON formatted files. KubeJS scripters can't write a script to read CSV files without this mod unless using malicious dark magic to break KubeJS's IO limitation.
-
-See the Usage Document for example usages.
+See the [Usage Document](https://nekojs.ytmango.uk/zh-tw/addons/NekoJS-CSV/) for example usages.
 
 ---
 
